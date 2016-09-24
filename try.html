@@ -821,6 +821,10 @@ Pixel-perfect &nbsp; Retina-ready &nbsp; Fast &nbsp; Consistent &nbsp; Hackable 
     <td><img src='/docker/pulls/mashape/kong.svg' alt=''/></td>
     <td><code>https://img.shields.io/docker/pulls/mashape/kong.svg</code></td>
   </tr>
+  <tr><th data-keywords='docker automated build'> Docker Automated build </th>
+    <td><img src='/docker/automated/jrottenberg/ffmpeg.svg' alt=''/></td>
+    <td><code>https://img.shields.io/docker/automated/jrottenberg/ffmpeg.svg</code></td>
+  </tr>
   <tr><th data-keywords='imagelayers'> ImageLayers Size: </th>
     <td><img src='/imagelayers/image-size/_/ubuntu/latest.svg' alt=''/></td>
     <td><code>https://img.shields.io/imagelayers/image-size/_/ubuntu/latest.svg</code></td>
@@ -927,6 +931,29 @@ Pixel-perfect &nbsp; Retina-ready &nbsp; Fast &nbsp; Consistent &nbsp; Hackable 
   <tr><th> StackExchange: </th>
   <td><img src='/stackexchange/stackoverflow/t/augeas.svg' alt=''/></td>
   <td><code>https://img.shields.io/stackexchange/stackoverflow/t/augeas.svg</code></td>
+  </tr>
+  <tr><th> Issue Stats: </th>
+  <td><img src='/issuestats/i/github/strongloop/express.svg' alt=''/></td>
+  <td><code>https://img.shields.io/issuestats/i/github/strongloop/express.svg</code></td>
+  </tr>
+  <tr><th> (long form): </th>
+  <td>&nbsp;</td>
+  <td><code>https://img.shields.io/issuestats/i/long/github/strongloop/express.svg</code></td>
+  </tr>
+  <tr><th> Issue Stats: </th>
+  <td><img src='/issuestats/p/github/strongloop/express.svg' alt=''/></td>
+  <td><code>https://img.shields.io/issuestats/p/github/strongloop/express.svg</code></td>
+  <tr><th> (long form): </th>
+  <td>&nbsp;</td>
+  <td><code>https://img.shields.io/issuestats/p/long/github/strongloop/express.svg</code></td>
+  </tr>
+  <tr><th> Libraries.io for releases: </th>
+    <td><img src='/librariesio/release/hex/phoenix/1.0.3.svg' alt=''/></td>
+    <td><code>https://img.shields.io/librariesio/release/hex/phoenix/1.0.3.svg</code></td>
+  </tr>
+  <tr><th> Libraries.io for GitHub: </th>
+    <td><img src='/librariesio/github/phoenixframework/phoenix.svg' alt=''/></td>
+    <td><code>https://img.shields.io/librariesio/github/phoenixframework/phoenix.svg</code></td>
   </tr>
 </tbody></table>
 
@@ -1280,7 +1307,7 @@ function markupDialog(tr) {
   var th = tr.firstElementChild;
   var link = th.dataset.link? th.dataset.link: '';
   // Remove the ?maxAge parameter from the query string.
-  link.replace(/[\?&]maxAge=\d+$|maxAge=\d+&/, '');
+  trimg.replace(/[\?&]maxAge=\d+$|maxAge=\d+&/, '');
   copyForm.img.value = trimg;
   copyForm.url.value = link;
   // Insert documentation.
