@@ -2,6 +2,7 @@ var secureServer = !!process.env.HTTPS;
 var serverPort = +process.env.PORT || +process.argv[2] || (secureServer? 443: 80);
 var bindAddress = process.env.BIND_ADDRESS || process.argv[3] || '::';
 var infoSite = process.env.INFOSITE || "http://shields.io";
+var githubApiUrl = process.env.GITHUB_URL || 'https://api.github.com';
 var Camp = require('camp');
 var camp = Camp.start({
   documentRoot: __dirname,
@@ -27,6 +28,10 @@ try {
   // is stored in this JSON data.
   serverSecrets = require('./secret.json');
 } catch(e) { console.error('No secret data (secret.json, see server.js):', e); }
+if (serverSecrets && serverSecrets.gh_client_id) {
+  githubAuth.setRoutes(camp);
+}
+
 var semver = require('semver');
 var serverStartTime = new Date((new Date()).toGMTString());
 
@@ -393,35 +398,94 @@ cache(function(data, match, sendBadge, request) {
 
 // Shippable integration
 camp.route(/^\/shippable\/([^\/]+)(?:\/(.+))?\.(svg|png|gif|jpg|json)$/,
-cache(function(data, match, sendBadge, request) {
+cache(function (data, match, sendBadge, request) {
+  var defaultOpts = {
+    colorA: '#555555',
+    successLabel: 'passing',
+    successColor: '#44CC11',
+    failLabel: 'failing',
+    failColor: '#DC5F59',
+    cancelledLabel: 'cancelled',
+    cancelledColor: '#6BAFBD',
+    unstableLabel: 'unstable',
+    unstableColor: '#CEA61B',
+    pendingLabel: 'pending',
+    pendingColor: '#5183A0',
+    skippedLabel: 'skipped',
+    skippedColor: '#F8A97D',
+    noBuildLabel: 'none',
+    noBuildColor: '#A1ABAB',
+    inaccessibleLabel: 'inaccessible',
+    inaccessibleColor: '#A1ABAB'
+  };
+
+  var badgeData = getBadgeData('build', data);
+  delete badgeData.colorscheme;
+
+  // overwrite the default options if present in query parameters
+  Object.keys(defaultOpts).forEach(
+    function (key) {
+      defaultOpts[key] = data[key] || defaultOpts[key];
+    }
+  );
+
+  badgeData.colorA = defaultOpts.colorA;
+  badgeData.colorB = defaultOpts.noBuildColor;
+
   var project = match[1];  // eg, 54d119db5ab6cc13528ab183
   var branch = match[2];
   var format = match[3];
   var url = 'https://api.shippable.com/projects/' + project + '/badge';
+
   if (branch != null) {
-    url += '?branchName=' + branch;
+    url += '?branch=' + branch;
   }
-  var badgeData = getBadgeData('build', data);
-  fetchFromSvg(request, url, function(err, res) {
+
+  fetchFromSvg(request, url, function (err, res) {
     if (err != null) {
-      badgeData.text[1] = 'inaccessible';
+      badgeData.text[1] = defaultOpts.inaccessibleLabel;
       sendBadge(format, badgeData);
       return;
     }
+
     try {
-      badgeData.text[1] = res;
-      if (res === 'shippable') {
-        badgeData.colorscheme = 'brightgreen';
-        badgeData.text[1] = 'passing';
-      } else if (res === 'unshippable') {
-        badgeData.colorscheme = 'red';
-      } else {
-        badgeData.text[1] = res;
+      switch (res) {
+        case 'none':
+          badgeData.text[1] = defaultOpts.noBuildLabel;
+          badgeData.colorB = defaultOpts.noBuildColor;
+          break;
+        case 'shippable':
+          badgeData.text[1] = defaultOpts.successLabel;
+          badgeData.colorB = defaultOpts.successColor;
+          break;
+        case 'failed':
+          badgeData.text[1] = defaultOpts.failLabel;
+          badgeData.colorB = defaultOpts.failColor;
+          break;
+        case 'cancelled':
+          badgeData.text[1] = defaultOpts.cancelledLabel;
+          badgeData.colorB = defaultOpts.cancelledColor;
+          break;
+        case 'pending':
+          badgeData.text[1] = defaultOpts.pendingLabel;
+          badgeData.colorB = defaultOpts.pendingColor;
+          break;
+        case 'skipped':
+          badgeData.text[1] = defaultOpts.skippedLabel;
+          badgeData.colorB = defaultOpts.skippedColor;
+          break;
+        case 'unstable':
+          badgeData.text[1] = defaultOpts.unstableLabel;
+          badgeData.colorB = defaultOpts.unstableColor;
+          break;
+        default:
+          badgeData.text[1] = 'invalid';
+          badgeData.colorB = defaultOpts.noBuildColor;
       }
       sendBadge(format, badgeData);
-
-    } catch(e) {
+    } catch (e) {
       badgeData.text[1] = 'invalid';
+      badgeData.colorB = defaultOpts.noBuildColor;
       sendBadge(format, badgeData);
     }
   });
@@ -1340,6 +1404,32 @@ cache(function(data, match, sendBadge, request) {
       sendBadge(format, badgeData);
     } catch(e) {
       badgeData.text[1] = 'invalid';
+      sendBadge(format, badgeData);
+    }
+  });
+}));
+
+// CDNJS version integration
+camp.route(/^\/cdnjs\/v\/(.*)\.(svg|png|gif|jpg|json)$/,
+cache(function(data, match, sendBadge, request) {
+  var library = encodeURIComponent(match[1]);  // eg, "express" or "@user/express"
+  var format = match[2];
+  var apiUrl = 'https://api.cdnjs.com/libraries/' + library + '?fields=version';
+  var badgeData = getBadgeData('cdnjs', data);
+  request(apiUrl, function(err, res, buffer) {
+    if (err != null) {
+      badgeData.text[1] = 'inaccessible';
+      sendBadge(format, badgeData);
+      return;
+    }
+    try {
+      var version = JSON.parse(buffer).version || 0;
+      var vdata = versionColor(version);
+      badgeData.text[1] = vdata.version;
+      badgeData.colorscheme = vdata.color;
+      sendBadge(format, badgeData);
+    } catch(e) {
+      badgeData.text[1] = 'not found';
       sendBadge(format, badgeData);
     }
   });
@@ -2803,29 +2893,18 @@ cache(function(data, match, sendBadge, request) {
   var user = match[1];  // eg, strongloop/express
   var repo = match[2];
   var format = match[3];
-  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo + '/tags';
-  // Using our OAuth App secret grants us 5000 req/hour
-  // instead of the standard 60 req/hour.
-  if (serverSecrets) {
-    apiUrl += '?client_id=' + serverSecrets.gh_client_id
-      + '&client_secret=' + serverSecrets.gh_client_secret;
-  }
+  var apiUrl = githubApiUrl + '/repos/' + user + '/' + repo + '/tags';
   var badgeData = getBadgeData('tag', data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
   }
-  // A special User-Agent is required:
-  // http://developer.github.com/v3/#user-agent-required
-  request(apiUrl, { headers: githubHeaders }, function(err, res, buffer) {
+  githubAuth.request(request, apiUrl, {}, function(err, res, buffer) {
     if (err != null) {
       badgeData.text[1] = 'inaccessible';
       sendBadge(format, badgeData);
       return;
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
-      }
       var data = JSON.parse(buffer);
       var versions = data.map(function(e) { return e.name; });
       var tag = latestVersion(versions);
@@ -2840,35 +2919,60 @@ cache(function(data, match, sendBadge, request) {
   });
 }));
 
-// GitHub release integration.
-camp.route(/^\/github\/release\/([^\/]+)\/([^\/]+)\.(svg|png|gif|jpg|json)$/,
+// GitHub contributors integration.
+camp.route(/^\/github\/contributors(-anon)?\/([^\/]+)\/([^\/]+)\.(svg|png|gif|jpg|json)$/,
 cache(function(data, match, sendBadge, request) {
-  var user = match[1];  // eg, qubyte/rubidium
-  var repo = match[2];
-  var format = match[3];
-  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo + '/releases/latest';
-  // Using our OAuth App secret grants us 5000 req/hour
-  // instead of the standard 60 req/hour.
-  if (serverSecrets) {
-    apiUrl += '?client_id=' + serverSecrets.gh_client_id
-      + '&client_secret=' + serverSecrets.gh_client_secret;
-  }
-  var badgeData = getBadgeData('release', data);
+  var isAnon = match[1];
+  var user = match[2];  // eg, qubyte/rubidium
+  var repo = match[3];
+  var format = match[4];
+  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo + '/contributors?page=1&per_page=1&anon=' + (!!isAnon);
+  var badgeData = getBadgeData('contributors', data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
   }
-  // A special User-Agent is required:
-  // http://developer.github.com/v3/#user-agent-required
-  request(apiUrl, { headers: githubHeaders }, function(err, res, buffer) {
+  githubAuth.request(request, apiUrl, {}, function(err, res, buffer) {
     if (err != null) {
       badgeData.text[1] = 'inaccessible';
       sendBadge(format, badgeData);
       return;
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
+      var contributors;
+
+      if (res.headers['link'] && res.headers['link'].indexOf('rel="last"') !== -1) {
+        contributors = res.headers['link'].match(/[?&]page=(\d+)[^>]+>; rel="last"/)[1];
+      } else {
+        contributors = JSON.parse(buffer).length;
       }
+
+      badgeData.text[1] = metric(+contributors);
+      badgeData.colorscheme = 'blue';
+    } catch(e) {
+      badgeData.text[1] = 'inaccessible';
+    }
+    sendBadge(format, badgeData);
+  });
+}));
+
+// GitHub release integration.
+camp.route(/^\/github\/release\/([^\/]+)\/([^\/]+)\.(svg|png|gif|jpg|json)$/,
+cache(function(data, match, sendBadge, request) {
+  var user = match[1];  // eg, qubyte/rubidium
+  var repo = match[2];
+  var format = match[3];
+  var apiUrl = githubApiUrl + '/repos/' + user + '/' + repo + '/releases/latest';
+  var badgeData = getBadgeData('release', data);
+  if (badgeData.template === 'social') {
+    badgeData.logo = badgeData.logo || logos.github;
+  }
+  githubAuth.request(request, apiUrl, {}, function(err, res, buffer) {
+    if (err != null) {
+      badgeData.text[1] = 'inaccessible';
+      sendBadge(format, badgeData);
+      return;
+    }
+    try {
       var data = JSON.parse(buffer);
       var version = data.tag_name;
       var prerelease = data.prerelease;
@@ -2890,31 +2994,20 @@ cache(function(data, match, sendBadge, request) {
   var repo = match[2];  // eg, subtitleedit
   var version = match[3];  // eg, 3.4.7
   var format = match[4];
-  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo + '/compare/' + version + '...master';
-  // Using our OAuth App secret grants us 5000 req/hour
-  // instead of the standard 60 req/hour.
-  if (serverSecrets) {
-    apiUrl += '?client_id=' + serverSecrets.gh_client_id
-      + '&client_secret=' + serverSecrets.gh_client_secret;
-  }
+  var apiUrl = githubApiUrl + '/repos/' + user + '/' + repo + '/compare/' + version + '...master';
   var badgeData = getBadgeData('commits since ' + version, data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
   }
-  // A special User-Agent is required:
-  // http://developer.github.com/v3/#user-agent-required
-  request(apiUrl, { headers: githubHeaders }, function(err, res, buffer) {
+  githubAuth.request(request, apiUrl, {}, function(err, res, buffer) {
     if (err != null) {
       badgeData.text[1] = 'inaccessible';
       sendBadge(format, badgeData);
       return;
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
-      }
       var data = JSON.parse(buffer);
-      badgeData.text[1] = data.ahead_by;
+      badgeData.text[1] = metric(data.ahead_by);
       badgeData.colorscheme = 'blue';
       sendBadge(format, badgeData);
     } catch(e) {
@@ -2930,7 +3023,7 @@ cache(function(data, match, sendBadge, request) {
   var user = match[1];  // eg, qubyte/rubidium
   var repo = match[2];
 
-  var tag = match[3]; //null for all releases
+  var tag = match[3];  // eg, v0.190.0, latest, null if querying all releases
   var asset_name = match[4].toLowerCase(); // eg. total, atom-amd64.deb, atom.x86_64.rpm
   var format = match[5];
 
@@ -2941,32 +3034,21 @@ cache(function(data, match, sendBadge, request) {
     total = false;
   }
 
-  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo + '/releases';
+  var apiUrl = githubApiUrl + '/repos/' + user + '/' + repo + '/releases';
   if (!total) {
     var release_path = tag !== 'latest' ? 'tags/' + tag : 'latest';
     apiUrl = apiUrl + '/' + release_path;
-  }
-  // Using our OAuth App secret grants us 5000 req/hour
-  // instead of the standard 60 req/hour.
-  if (serverSecrets) {
-    apiUrl += '?client_id=' + serverSecrets.gh_client_id
-      + '&client_secret=' + serverSecrets.gh_client_secret;
   }
   var badgeData = getBadgeData('downloads', data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
   }
-  // A special User-Agent is required:
-  // http://developer.github.com/v3/#user-agent-required
-  request(apiUrl, { headers: githubHeaders }, function(err, res, buffer) {
+  githubAuth.request(request, apiUrl, {}, function(err, res, buffer) {
     if (err != null) {
       badgeData.text[1] = 'inaccessible';
       return sendBadge(format, badgeData);
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
-      }
       var data = JSON.parse(buffer);
       var downloads = 0;
 
@@ -3007,56 +3089,63 @@ cache(function(data, match, sendBadge, request) {
 }));
 
 // GitHub issues integration.
-camp.route(/^\/github\/issues(-raw)?\/([^\/]+)\/([^\/]+)\/?([^\/]+)?\.(svg|png|gif|jpg|json)$/,
+camp.route(/^\/github\/issues(-pr)?(-closed)?(-raw)?\/([^\/]+)\/([^\/]+)\/?([^\/]+)?\.(svg|png|gif|jpg|json)$/,
 cache(function(data, match, sendBadge, request) {
-  var isRaw = !!match[1];
-  var user = match[2];  // eg, badges
-  var repo = match[3];  // eg, shields
-  var ghLabel = match[4];  // eg, website
-  var format = match[5];
-  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo;
-  var issuesApi = false;  // Are we using the issues API instead of the repo one?
+  var isPR = !!match[1];
+  var isClosed = !!match[2];
+  var isRaw = !!match[3];
+  var user = match[4];  // eg, badges
+  var repo = match[5];  // eg, shields
+  var ghLabel = match[6];  // eg, website
+  var format = match[7];
+  var apiUrl = githubApiUrl;
   var query = {};
-  if (ghLabel !== undefined) {
-    apiUrl += '/issues';
-    query.labels = ghLabel;
-    issuesApi = true;
+  var issuesApi = false;  // Are we using the issues API instead of the repo one?
+  if (isPR) {
+    apiUrl += '/search/issues';
+    query.q = 'is:pr is:' + (isClosed? 'closed': 'open') +
+      ' repo:' + user + '/' + repo;
+  } else {
+    apiUrl += '/repos/' + user + '/' + repo;
+    if (isClosed || ghLabel !== undefined) {
+      apiUrl += '/issues';
+      if (isClosed) { query.state = 'closed'; }
+      if (ghLabel !== undefined) { query.labels = ghLabel; }
+      issuesApi = true;
+    }
   }
-  // Using our OAuth App secret grants us 5000 req/hour
-  // instead of the standard 60 req/hour.
-  if (serverSecrets) {
-    query.client_id = serverSecrets.gh_client_id;
-    query.client_secret = serverSecrets.gh_client_secret;
-  }
-  apiUrl += '?' + querystring.stringify(query);
 
-  var badgeData = getBadgeData('issues', data);
+  var closedText = isClosed? 'closed ': '';
+  var targetText = isPR? 'pull requests': 'issues';
+  var badgeData = getBadgeData(closedText + targetText, data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
   }
-  // A special User-Agent is required:
-  // http://developer.github.com/v3/#user-agent-required
-  request(apiUrl, { headers: githubHeaders }, function(err, res, buffer) {
+  githubAuth.request(request, apiUrl, query, function(err, res, buffer) {
     if (err != null) {
       badgeData.text[1] = 'inaccessible';
       sendBadge(format, badgeData);
       return;
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
-      }
       var data = JSON.parse(buffer);
       var modifier = '';
-      if (issuesApi) {
-        var issues = data.length;
-        if (res.headers['link'] &&
-            res.headers['link'].indexOf('rel="last"') >= 0) { modifier = '+'; }
+      if (isPR) {
+        issues = data.total_count;
       } else {
-        var issues = data.open_issues_count;
+        if (issuesApi) {
+          var issues = data.length;
+          if (res.headers['link'] &&
+              res.headers['link'].indexOf('rel="last"') >= 0) {
+            modifier = '+';
+          }
+        } else {
+          var issues = data.open_issues_count;
+        }
       }
-      badgeData.text[1] = issues + modifier + (isRaw? '': ' open');
-      badgeData.colorscheme = issues ? 'yellow' : 'brightgreen';
+      var rightText = isRaw? '': (isClosed? ' closed': ' open');
+      badgeData.text[1] = metric(issues) + modifier + rightText;
+      badgeData.colorscheme = (issues > 0)? 'yellow': 'brightgreen';
       sendBadge(format, badgeData);
     } catch(e) {
       badgeData.text[1] = 'invalid';
@@ -3071,13 +3160,7 @@ cache(function(data, match, sendBadge, request) {
   var user = match[1];  // eg, qubyte/rubidium
   var repo = match[2];
   var format = match[3];
-  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo;
-  // Using our OAuth App secret grants us 5000 req/hour
-  // instead of the standard 60 req/hour.
-  if (serverSecrets) {
-    apiUrl += '?client_id=' + serverSecrets.gh_client_id
-      + '&client_secret=' + serverSecrets.gh_client_secret;
-  }
+  var apiUrl = githubApiUrl + '/repos/' + user + '/' + repo;
   var badgeData = getBadgeData('forks', data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
@@ -3086,18 +3169,13 @@ cache(function(data, match, sendBadge, request) {
       'https://github.com/' + user + '/' + repo + '/network',
      ];
   }
-  // A special User-Agent is required:
-  // http://developer.github.com/v3/#user-agent-required
-  request(apiUrl, { headers: githubHeaders }, function(err, res, buffer) {
+  githubAuth.request(request, apiUrl, {}, function(err, res, buffer) {
     if (err != null) {
       badgeData.text[1] = 'inaccessible';
       sendBadge(format, badgeData);
       return;
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
-      }
       var data = JSON.parse(buffer);
       var forks = data.forks_count;
       badgeData.text[1] = forks;
@@ -3117,13 +3195,7 @@ cache(function(data, match, sendBadge, request) {
   var user = match[1];  // eg, qubyte/rubidium
   var repo = match[2];
   var format = match[3];
-  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo;
-  // Using our OAuth App secret grants us 5000 req/hour
-  // instead of the standard 60 req/hour.
-  if (serverSecrets) {
-    apiUrl += '?client_id=' + serverSecrets.gh_client_id
-      + '&client_secret=' + serverSecrets.gh_client_secret;
-  }
+  var apiUrl = githubApiUrl + '/repos/' + user + '/' + repo;
   var badgeData = getBadgeData('stars', data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
@@ -3132,19 +3204,14 @@ cache(function(data, match, sendBadge, request) {
       'https://github.com/' + user + '/' + repo + '/stargazers',
      ];
   }
-  // A special User-Agent is required:
-  // http://developer.github.com/v3/#user-agent-required
-  request(apiUrl, { headers: githubHeaders }, function(err, res, buffer) {
+  githubAuth.request(request, apiUrl, {}, function(err, res, buffer) {
     if (err != null) {
       badgeData.text[1] = 'inaccessible';
       sendBadge(format, badgeData);
       return;
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
-      }
-      badgeData.text[1] = JSON.parse(buffer).stargazers_count;
+      badgeData.text[1] = metric(JSON.parse(buffer).stargazers_count);
       badgeData.colorscheme = null;
       badgeData.colorB = '#4183C4';
       sendBadge(format, badgeData);
@@ -3161,13 +3228,7 @@ cache(function(data, match, sendBadge, request) {
   var user = match[1];  // eg, qubyte/rubidium
   var repo = match[2];
   var format = match[3];
-  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo;
-  // Using our OAuth App secret grants us 5000 req/hour
-  // instead of the standard 60 req/hour.
-  if (serverSecrets) {
-    apiUrl += '?client_id=' + serverSecrets.gh_client_id
-      + '&client_secret=' + serverSecrets.gh_client_secret;
-  }
+  var apiUrl = githubApiUrl + '/repos/' + user + '/' + repo;
   var badgeData = getBadgeData('watchers', data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
@@ -3176,18 +3237,13 @@ cache(function(data, match, sendBadge, request) {
       'https://github.com/' + user + '/' + repo + '/watchers',
      ];
   }
-  // A special User-Agent is required:
-  // http://developer.github.com/v3/#user-agent-required
-  request(apiUrl, { headers: githubHeaders }, function(err, res, buffer) {
+  githubAuth.request(request, apiUrl, {}, function(err, res, buffer) {
     if (err != null) {
       badgeData.text[1] = 'inaccessible';
       sendBadge(format, badgeData);
       return;
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
-      }
       badgeData.text[1] = JSON.parse(buffer).subscribers_count;
       badgeData.colorscheme = null;
       badgeData.colorB = '#4183C4';
@@ -3204,29 +3260,18 @@ camp.route(/^\/github\/followers\/([^\/]+)\.(svg|png|gif|jpg|json)$/,
 cache(function(data, match, sendBadge, request) {
   var user = match[1];  // eg, qubyte
   var format = match[2];
-  var apiUrl = 'https://api.github.com/users/' + user;
-  // Using our OAuth App secret grants us 5000 req/hour
-  // instead of the standard 60 req/hour.
-  if (serverSecrets) {
-    apiUrl += '?client_id=' + serverSecrets.gh_client_id
-      + '&client_secret=' + serverSecrets.gh_client_secret;
-  }
+  var apiUrl = githubApiUrl + '/users/' + user;
   var badgeData = getBadgeData('followers', data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
   }
-  // A special User-Agent is required:
-  // http://developer.github.com/v3/#user-agent-required
-  request(apiUrl, { headers: githubHeaders }, function(err, res, buffer) {
+  githubAuth.request(request, apiUrl, {}, function(err, res, buffer) {
     if (err != null) {
       badgeData.text[1] = 'inaccessible';
       sendBadge(format, badgeData);
       return;
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
-      }
       badgeData.text[1] = JSON.parse(buffer).followers;
       badgeData.colorscheme = null;
       badgeData.colorB = '#4183C4';
@@ -3244,7 +3289,7 @@ cache(function(data, match, sendBadge, request) {
   var user = match[1];  // eg, mashape
   var repo = match[2];  // eg, apistatus
   var format = match[3];
-  var apiUrl = 'https://api.github.com/repos/' + user + '/' + repo;
+  var apiUrl = githubApiUrl + '/repos/' + user + '/' + repo;
   var badgeData = getBadgeData('license', data);
   if (badgeData.template === 'social') {
     badgeData.logo = badgeData.logo || logos.github;
@@ -3269,9 +3314,7 @@ cache(function(data, match, sendBadge, request) {
       return;
     }
     try {
-      if ((+res.headers['x-ratelimit-remaining']) === 0) {
-        return;  // Hope for the best in the cache.
-      } else if (res.statusCode === 404) {
+      if (res.statusCode === 404) {
         badgeData.text[1] = 'repo not found';
         sendBadge(format, badgeData);
         return;
@@ -4470,15 +4513,16 @@ cache(function(data, match, sendBadge, request) {
 
 // CircleCI build integration.
 // https://circleci.com/api/v1/project/BrightFlair/PHP.Gt?circle-token=0a5143728784b263d9f0238b8d595522689b3af2&limit=1&filter=completed
-camp.route(/^\/circleci\/(?:token\/(\w+))?[+\/]?project\/([^\/]+\/[^\/]+)(?:\/(.*))?\.(svg|png|gif|jpg|json)$/,
+camp.route(/^\/circleci\/(?:token\/(\w+))?[+\/]?project\/(?:(github|bitbucket)\/)?([^\/]+\/[^\/]+)(?:\/(.*))?\.(svg|png|gif|jpg|json)$/,
 cache(function(data, match, sendBadge, request) {
-  var token = match[1]
-  var userRepo = match[2];  // eg, `BrightFlair/PHP.Gt`.
-  var branch = match[3];
-  var format = match[4];
+  var token = match[1];
+  var type = match[2] || 'github'; // github OR bitbucket
+  var userRepo = match[3];  // eg, `RedSparr0w/node-csgo-parser`.
+  var branch = match[4]
+  var format = match[5];
 
   // Base API URL
-  var apiUrl = 'https://circleci.com/api/v1/project/' + userRepo;
+  var apiUrl = 'https://circleci.com/api/v1.1/project/' + type + '/' + userRepo;
 
   // Query Params
   queryParams = {};
@@ -4505,6 +4549,11 @@ cache(function(data, match, sendBadge, request) {
       sendBadge(format, badgeData);
       return;
     }
+    if (data.message !== undefined){
+      badgeData.text[1] = data.message;
+      sendBadge(format, badgeData);
+      return;
+    }
     try {
       var status = data[0].status;
       switch(status) {
@@ -4525,9 +4574,7 @@ cache(function(data, match, sendBadge, request) {
         badgeData.colorscheme = 'yellow';
       default:
         badgeData.text[1] = status.replace('_', ' ');
-        break;
       }
-
       sendBadge(format, badgeData);
     } catch(e) {
       badgeData.text[1] = 'invalid';
@@ -4764,6 +4811,44 @@ cache(function(data, match, sendBadge, request) {
       var pulls = data.pull_count;
       badgeData.text[1] = metric(pulls);
       badgeData.colorscheme = null;
+      badgeData.colorB = '#008bb8';
+      sendBadge(format, badgeData);
+    } catch(e) {
+      badgeData.text[1] = 'invalid';
+      sendBadge(format, badgeData);
+    }
+  });
+}));
+
+
+// Docker Hub automated integration.
+camp.route(/^\/docker\/automated\/([^\/]+)\/([^\/]+)\.(svg|png|gif|jpg|json)$/,
+cache(function(data, match, sendBadge, request) {
+  var user = match[1];  // eg, jrottenberg
+  var repo = match[2];  // eg, ffmpeg
+  var format = match[3];
+  if (user === '_') {
+    user = 'library';
+  }
+  var path = user + '/' + repo;
+  var url = 'https://registry.hub.docker.com/v2/repositories/' + path;
+  var badgeData = getBadgeData('docker build', data);
+  request(url, function(err, res, buffer) {
+    if (err != null) {
+      badgeData.text[1] = 'inaccessible';
+      sendBadge(format, badgeData);
+      return;
+    }
+    try {
+      var data = JSON.parse(buffer);
+      var is_automated = data.is_automated;
+      if (is_automated) {
+        badgeData.text[1] = 'automated';
+        badgeData.colorscheme = 'blue';
+      } else {
+        badgeData.text[1] = 'manual';
+        badgeData.colorscheme = 'yellow';
+      }
       badgeData.colorB = '#008bb8';
       sendBadge(format, badgeData);
     } catch(e) {
@@ -5237,7 +5322,7 @@ cache(function(data, match, sendBadge, request) {
           badgeData.colorscheme = vdata.color;
         } else if (type === 'd') {
           var downloads = value.interactionCount.UserDownloads;
-          badgeData.text[0] = 'downloads';
+          badgeData.text[0] = data.label || 'downloads';
           badgeData.text[1] = metric(downloads) + ' total';
           badgeData.colorscheme = downloadCountColor(downloads);
         } else if (type === 'price') {
@@ -5245,12 +5330,12 @@ cache(function(data, match, sendBadge, request) {
           badgeData.colorscheme = 'brightgreen';
         } else if (type === 'rating') {
           var rating = Math.round(value.ratingValue * 100) / 100;
-          badgeData.text[0] = 'rating';
+          badgeData.text[0] = data.label || 'rating';
           badgeData.text[1] = rating;
           badgeData.colorscheme = floorCountColor(rating, 2, 3, 4);
         } else if (type === 'rating-count') {
           var ratingCount = value.ratingCount;
-          badgeData.text[0] = 'rating count';
+          badgeData.text[0] = data.label || 'rating count';
           badgeData.text[1] = metric(ratingCount) + ' total';
           badgeData.colorscheme = floorCountColor(ratingCount, 5, 50, 500);
         }
@@ -5365,6 +5450,130 @@ cache(function(data, match, sendBadge, request) {
       badge({text: ['error', 'bad badge'], colorscheme: 'red'},
         makeSend(format, ask.res, end));
     }
+  });
+}));
+
+// Issue Stats integration.
+camp.route(/^\/issuestats\/([^\/]+)(\/long)?\/([^\/]+)\/(.+)\.(svg|png|gif|jpg|json)$/,
+cache(function(data, match, sendBadge, request) {
+  var type = match[1];      // e.g. `i` for Issue or `p` for PR
+  var longForm = !!match[2];
+  var host = match[3];      // e.g. `github`
+  var userRepo = match[4];  // e.g. `ruby/rails`
+  var format = match[5];
+
+  var badgeData = getBadgeData('Issue Stats', data);
+
+  // Maps type name from URL to JSON property name prefix for badge data
+  var typeToPropPrefix = {
+    i: 'issue',
+    p: 'pr'
+  };
+  var typePropPrefix = typeToPropPrefix[type];
+  if (typePropPrefix === undefined) {
+    badgeData.text[1] = 'invalid';
+    sendBadge(format, badgeData);
+    return;
+  }
+
+  var url = 'http://issuestats.com/' + host + '/' + userRepo;
+  var qs = {format: 'json'};
+  if (!longForm) {
+    qs.concise = true;
+  }
+  var options = {
+    method: 'GET',
+    url: url,
+    qs: qs,
+    gzip: true,
+    json: true
+  };
+  request(options, function(err, res, json) {
+    if (err != null || res.statusCode >= 500) {
+      badgeData.text[1] = 'invalid';
+      sendBadge(format, badgeData);
+      return;
+    }
+
+    if (res.statusCode >= 400 || !json || typeof json !== 'object') {
+      badgeData.text[1] = 'not found';
+      sendBadge(format, badgeData);
+      return;
+    }
+
+    try {
+      var label = json[typePropPrefix + '_badge_preamble'];
+      var value = json[typePropPrefix + '_badge_words'];
+      var color = json[typePropPrefix + '_badge_color'];
+
+      if (label != null) badgeData.text[0] = label;
+      badgeData.text[1] = value || 'invalid';
+      if (color != null) badgeData.colorscheme = color;
+
+      sendBadge(format, badgeData);
+    } catch (e) {
+      badgeData.text[1] = 'invalid';
+      sendBadge(format, badgeData);
+    }
+  });
+}));
+
+// Libraries.io integration.
+camp.route(/^\/librariesio\/(github|release)\/([\w\-\_]+\/[\w\-\_]+)\/?([\w\-\_\.]+)?\.(svg|png|gif|jpg|json)$/,
+cache(function(data, match, sendBadge, request) {
+
+  var resource  = match[1];
+  var project   = match[2];
+  var version   = match[3];
+  var format    = match[4];
+
+  var uri;
+  switch (resource) {
+    case 'github':
+      uri = 'https://libraries.io/api/github/' + project + '/dependencies';
+      break;
+    case 'release':
+      var v = version || 'latest';
+      uri = 'https://libraries.io/api/' + project + '/' + v + '/dependencies';
+      break;
+  }
+
+  var options = {method: 'GET', json: true, uri: uri};
+  var badgeData = getBadgeData('dependencies', data);
+
+  request(options, function(err, res, json) {
+
+    if (err || res.statusCode !== 200) {
+      badgeData.text[1] = 'not available';
+      return sendBadge(format, badgeData);
+    }
+
+    var deprecated = json.dependencies.filter(function(dep) {
+      return dep.deprecated;
+    });
+
+    var outofdate = json.dependencies.filter(function(dep) {
+      return dep.outdated;
+    });
+
+    // Deprecated dependencies are really bad
+    if (deprecated.length > 0) {
+      badgeData.colorscheme = 'red';
+      badgeData.text[1] = deprecated.length + ' deprecated';
+      return sendBadge(format, badgeData);
+    }
+
+    // Out of date dependencies are pretty bad
+    if (outofdate.length > 0) {
+      badgeData.colorscheme = 'orange';
+      badgeData.text[1] = outofdate.length + ' out of date';
+      return sendBadge(format, badgeData);
+    }
+
+    // Up to date dependencies are good!
+    badgeData.colorscheme = 'brightgreen';
+    badgeData.text[1] = 'up to date';
+    return sendBadge(format, badgeData);
   });
 }));
 
@@ -5572,21 +5781,6 @@ function regularUpdate(url, interval, scraper, cb) {
     regularUpdateCache[url].data = data;
     cb(null, data);
   });
-}
-
-var githubHeaders = {
-  'User-Agent': 'Shields.io',
-  'Accept': 'application/vnd.github.v3+json'
-};
-if (serverSecrets && serverSecrets.gh_client_id) {
-  githubAuth.setRoutes(camp);
-}
-
-// Personal tokens allow access to GitHub private repositories.
-// You can manage your personal GitHub token at
-// <https://github.com/settings/tokens>.
-if (serverSecrets && serverSecrets.gh_token) {
-  githubHeaders['Authorization'] = 'token ' + serverSecrets.gh_token;
 }
 
 // Given a number, string with appropriate unit in the metric system, SI.
